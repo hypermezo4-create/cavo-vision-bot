@@ -1,0 +1,38 @@
+name: Deploy CAVO V3 to Fly
+
+on:
+  push:
+    branches:
+      - agent/cavo-vision-v3
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cavo-vision-bot-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Build and deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out CAVO V3
+        uses: actions/checkout@v4
+
+      - name: Set up Fly CLI
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Deploy with Fly Buildkit
+        run: >-
+          flyctl deploy
+          --app cavo-vision-bot
+          --buildkit
+          --depot=false
+          --remote-only
+          --ha=false
+          --yes
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}

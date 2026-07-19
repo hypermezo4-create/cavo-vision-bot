@@ -34,3 +34,18 @@ jobs:
           --yes
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+      - name: Start the bot machine
+        run: flyctl machine start 814470c9546718 --app cavo-vision-bot
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+      - name: Verify bot startup
+        run: |
+          sleep 45
+          flyctl machine status 814470c9546718 --app cavo-vision-bot --json
+          flyctl logs --app cavo-vision-bot --machine 814470c9546718 --no-tail
+          flyctl machine status 814470c9546718 --app cavo-vision-bot --json |
+            jq --exit-status '.state == "started"'
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}

@@ -7,9 +7,14 @@ primary_region = "fra"
 [env]
   SHEET_NAME = "الورقة1"
   SHEET_REFRESH_SECONDS = "20"
+  SHEET_MAX_BACKOFF_SECONDS = "300"
   CATALOG_DIR = "/data/catalog"
   INDEX_PATH = "/data/catalog-index.npz"
   LEARNING_DIR = "/data/confirmed"
+  ALLOW_PUBLIC = "false"
+  CONCURRENT_UPDATES = "4"
+  INFERENCE_CONCURRENCY = "1"
+  DROP_PENDING_UPDATES = "true"
 
 [processes]
   app = "cavo-bot"
@@ -19,6 +24,6 @@ primary_region = "fra"
   destination = "/data"
 
 [[vm]]
-  memory = "2gb"
-  cpu_kind = "shared"
+  memory = "4gb"
+  cpu_kind = "performance"
   cpus = 1

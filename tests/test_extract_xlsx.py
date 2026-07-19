@@ -24,7 +24,14 @@ class ExtractWorkbookTests(unittest.TestCase):
             sheet = workbook.active
             sheet.title = "الورقة1"
             sheet.append(
-                ["صورة المنتج", "المقاسات", "الكمية", "BOT_PRODUCT_ID", "BOT_ENABLED", "BOT_VALIDATION"]
+                [
+                    "صورة المنتج",
+                    "المقاسات",
+                    "الكمية",
+                    "BOT_PRODUCT_ID",
+                    "BOT_ENABLED",
+                    "BOT_VALIDATION",
+                ]
             )
             sheet.append([None, "41 - 41 - 42", 3, "CAVO-0001", True, "OK"])
             image_stream = io.BytesIO(reference.read_bytes())

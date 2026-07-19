@@ -2,11 +2,20 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Iterable
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
+PRODUCT_ID_PATTERN = re.compile(r"CAVO-\d{4}")
+
+
+def normalize_product_id(product_id: str) -> str:
+    normalized = product_id.strip().upper()
+    if not PRODUCT_ID_PATTERN.fullmatch(normalized):
+        raise ValueError(f"Invalid CAVO product ID: {product_id!r}")
+    return normalized
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,7 +29,10 @@ def discover_catalog_images(catalog_dir: Path) -> list[CatalogImage]:
     if not catalog_dir.exists():
         return images
     for product_dir in sorted(path for path in catalog_dir.iterdir() if path.is_dir()):
-        product_id = product_dir.name.upper()
+        try:
+            product_id = normalize_product_id(product_dir.name)
+        except ValueError:
+            continue
         for path in sorted(product_dir.iterdir()):
             if path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES:
                 images.append(CatalogImage(product_id=product_id, path=str(path)))
@@ -28,7 +40,7 @@ def discover_catalog_images(catalog_dir: Path) -> list[CatalogImage]:
 
 
 def representative_image(catalog_dir: Path, product_id: str) -> Path | None:
-    folder = catalog_dir / product_id.upper()
+    folder = catalog_dir / normalize_product_id(product_id)
     if not folder.exists():
         return None
     return next(
@@ -43,8 +55,12 @@ def add_confirmed_reference(
     image_bytes: bytes,
     suffix: str = ".jpg",
 ) -> Path:
+    product_id = normalize_product_id(product_id)
+    suffix = suffix.lower()
+    if suffix not in IMAGE_SUFFIXES:
+        raise ValueError(f"Unsupported catalog image suffix: {suffix}")
     digest = hashlib.sha256(image_bytes).hexdigest()[:16]
-    folder = catalog_dir / product_id.upper()
+    folder = catalog_dir / product_id
     folder.mkdir(parents=True, exist_ok=True)
     output = folder / f"confirmed-{digest}{suffix}"
     if not output.exists():
@@ -56,4 +72,3 @@ def write_manifest(path: Path, items: Iterable[CatalogImage]) -> None:
     payload = [asdict(item) for item in items]
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-

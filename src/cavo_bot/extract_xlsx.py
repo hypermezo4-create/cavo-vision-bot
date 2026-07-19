@@ -8,6 +8,7 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 
+from .catalog import normalize_product_id
 from .inventory import parse_sizes
 
 
@@ -61,6 +62,7 @@ def extract_workbook(
         product_id = str(sheet.cell(row=row, column=4).value or "").strip().upper()
         if not product_id:
             product_id = f"CAVO-{row - 1:04d}"
+        product_id = normalize_product_id(product_id)
         folder = output_dir / product_id
         folder.mkdir(parents=True, exist_ok=True)
 
@@ -94,7 +96,9 @@ def extract_workbook(
             )
         )
 
-    duplicate_ids = [pid for pid, count in Counter(p.product_id for p in products).items() if count > 1]
+    duplicate_ids = [
+        pid for pid, count in Counter(p.product_id for p in products).items() if count > 1
+    ]
     if duplicate_ids:
         raise ValueError(f"Duplicate product IDs in workbook: {duplicate_ids}")
 
@@ -103,8 +107,7 @@ def extract_workbook(
     for product in products:
         record = asdict(product)
         record["image_paths"] = [
-            str(Path(path).resolve().relative_to(manifest_root))
-            for path in product.image_paths
+            str(Path(path).resolve().relative_to(manifest_root)) for path in product.image_paths
         ]
         manifest_products.append(record)
 

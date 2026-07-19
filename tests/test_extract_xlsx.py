@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -41,6 +42,14 @@ class ExtractWorkbookTests(unittest.TestCase):
             self.assertEqual(products[0].computed_quantity, 3)
             self.assertEqual(len(products[0].image_paths), 1)
             self.assertTrue(Path(products[0].image_paths[0]).exists())
+            manifest = json.loads(
+                (root / "catalog/catalog-manifest.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(manifest["source"], "cavo.xlsx")
+            self.assertEqual(
+                manifest["products"][0]["image_paths"],
+                ["CAVO-0001/sheet-reference-01.png"],
+            )
 
 
 if __name__ == "__main__":

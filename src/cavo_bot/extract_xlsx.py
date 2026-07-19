@@ -98,12 +98,22 @@ def extract_workbook(
     if duplicate_ids:
         raise ValueError(f"Duplicate product IDs in workbook: {duplicate_ids}")
 
+    manifest_products: list[dict[str, object]] = []
+    manifest_root = output_dir.resolve()
+    for product in products:
+        record = asdict(product)
+        record["image_paths"] = [
+            str(Path(path).resolve().relative_to(manifest_root))
+            for path in product.image_paths
+        ]
+        manifest_products.append(record)
+
     manifest = {
-        "source": str(workbook_path),
+        "source": workbook_path.name,
         "sheet": sheet_name,
         "product_count": len(products),
         "image_count": sum(len(product.image_paths) for product in products),
-        "products": [asdict(product) for product in products],
+        "products": manifest_products,
     }
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "catalog-manifest.json").write_text(
@@ -137,4 +147,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

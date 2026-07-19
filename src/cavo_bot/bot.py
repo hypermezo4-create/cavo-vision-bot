@@ -41,6 +41,7 @@ class CavoBot:
             min_score=settings.min_match_score,
             min_margin=settings.min_match_margin,
             top_k=settings.top_k,
+            catalog_dir=settings.catalog_dir,
         )
         self.pending: dict[int, PendingMatch] = {}
         self.refresh_task: asyncio.Task[None] | None = None

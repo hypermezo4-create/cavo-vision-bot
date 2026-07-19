@@ -103,6 +103,7 @@ class ProductRecognizer:
         min_score: float,
         min_margin: float,
         top_k: int,
+        catalog_dir: Path | None = None,
     ) -> None:
         if vectors.ndim != 2 or len(vectors) != len(product_ids):
             raise ValueError("Invalid recognition index")
@@ -113,6 +114,7 @@ class ProductRecognizer:
         self.min_score = min_score
         self.min_margin = min_margin
         self.top_k = top_k
+        self.catalog_dir = catalog_dir.resolve() if catalog_dir else None
         self._lock = threading.RLock()
 
     @classmethod
@@ -123,20 +125,32 @@ class ProductRecognizer:
         min_score: float,
         min_margin: float,
         top_k: int,
+        catalog_dir: Path | None = None,
     ) -> "ProductRecognizer":
         if not path.exists():
             raise RuntimeError(
                 f"Recognition index not found at {path}. Run cavo-build-index first."
             )
         with np.load(path, allow_pickle=False) as index:
+            stored_paths = index["reference_paths"].astype(str)
+            if catalog_dir is not None:
+                root = catalog_dir.resolve()
+                stored_paths = np.asarray(
+                    [
+                        str(root / item) if not Path(item).is_absolute() else item
+                        for item in stored_paths
+                    ],
+                    dtype=str,
+                )
             return cls(
                 product_ids=index["product_ids"],
-                reference_paths=index["reference_paths"],
+                reference_paths=stored_paths,
                 vectors=index["vectors"],
                 embedder=embedder,
                 min_score=min_score,
                 min_margin=min_margin,
                 top_k=top_k,
+                catalog_dir=catalog_dir,
             )
 
     def match_bytes(self, image_bytes: bytes) -> MatchResult:
@@ -181,12 +195,23 @@ class ProductRecognizer:
             vector = self.embedder.embed(image)
         with self._lock:
             self.product_ids = np.append(self.product_ids, product_id.upper())
-            self.reference_paths = np.append(self.reference_paths, str(output))
+            self.reference_paths = np.append(self.reference_paths, str(output.resolve()))
             self.vectors = np.vstack([self.vectors, vector.astype(np.float32)])
+            stored_paths = self.reference_paths
+            if self.catalog_dir is not None:
+                stored_paths = np.asarray(
+                    [
+                        str(Path(path).resolve().relative_to(self.catalog_dir))
+                        if Path(path).resolve().is_relative_to(self.catalog_dir)
+                        else path
+                        for path in self.reference_paths
+                    ],
+                    dtype=str,
+                )
             np.savez_compressed(
                 index_path,
                 product_ids=self.product_ids,
-                reference_paths=self.reference_paths,
+                reference_paths=stored_paths,
                 vectors=self.vectors,
                 metadata=np.asarray(
                     [json.dumps({"version": 1, "images": len(self.product_ids)})]
@@ -203,11 +228,12 @@ def build_index(catalog_dir: Path, output: Path, embedder: Embedder) -> int:
     product_ids: list[str] = []
     paths: list[str] = []
     vectors: list[np.ndarray] = []
+    root = catalog_dir.resolve()
     for item in catalog:
         with Image.open(item.path) as image:
             vector = embedder.embed(image)
         product_ids.append(item.product_id)
-        paths.append(item.path)
+        paths.append(str(Path(item.path).resolve().relative_to(root)))
         vectors.append(vector)
 
     output.parent.mkdir(parents=True, exist_ok=True)

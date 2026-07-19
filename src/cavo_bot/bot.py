@@ -2,12 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import time
 from dataclasses import dataclass
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    InputMediaPhoto,
+    Update,
+)
 from telegram.constants import ChatAction
+from telegram.error import BadRequest
 from telegram.ext import (
     Application,
     ApplicationBuilder,
@@ -18,58 +23,19 @@ from telegram.ext import (
     filters,
 )
 
-import google.generativeai as genai
-
+from .catalog import representative_image
 from .config import Settings
-from .inventory import CavoSheetClient, format_inventory_result
+from .inventory import CavoSheetClient, InventoryItem, format_inventory_result
 from .preview import candidate_collage
-from .recognizer import ProductRecognizer, ResNet18HybridEmbedder
+from .recognizer import MatchCandidate, ProductRecognizer, ResNet18HybridEmbedder
 
 LOGGER = logging.getLogger(__name__)
-
-# --- إعداد محرك الذكاء الاصطناعي (Gemini Vision) ---
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-gemini_model = None
-if GEMINI_API_KEY:
-    try:
-        genai.configure(api_key=GEMINI_API_KEY)
-        gemini_model = genai.GenerativeModel('gemini-2.5-flash')
-        LOGGER.info("✅ Gemini AI model initialized successfully.")
-    except Exception as e:
-        LOGGER.error("❌ Failed to initialize Gemini model: %s", e)
-else:
-    LOGGER.warning("⚠️ GEMINI_API_KEY not found. Bot will fallback to standard text formatting.")
-
-
-def generate_smart_sales_reply(image_payload: bytes, inventory_text: str) -> str:
-    if not gemini_model:
-        return inventory_text
-
-    prompt = f"""
-    أنت البياع المحترف والمساعد الذكي لعلامة "CAVO PREMIUM MEN'S FOOTWEAR" للأحذية الفاخرة.
-    العميل أرسل صورة الحذاء المرفقة.
-
-    نظام البحث الآلي في كتالوج CAVO استخرج هذا الموديل والمقاسات المتاحة له حالياً من الإكسيل:
-    {inventory_text}
-
-    المطلوب منك:
-    1. اكتب رداً ترحيبياً ومقنعاً جداً للعميل باللهجة المصرية الراقية والاحترافية.
-    2. اعرض اسم الموديل والمقاسات المتاحة له بوضوح وأناقة كما وردت من النظام.
-    3. أضف لمسة بياع شاطر تحفز العميل على تأكيد الطلب أو اختيار مقاسه فوراً.
-    4. اجعل الرد مختصراً ومنظماً ومناسباً لرسائل تليجرام.
-    """
-    try:
-        image_part = {"mime_type": "image/jpeg", "data": image_payload}
-        response = gemini_model.generate_content([prompt, image_part])
-        return response.text
-    except Exception as e:
-        LOGGER.error("⚠️ Gemini API error: %s", e)
-        return inventory_text
 
 
 @dataclass(slots=True)
 class PendingMatch:
     image_bytes: bytes
+    candidate_ids: tuple[str, ...]
     created_at: float
 
 
@@ -105,12 +71,12 @@ class CavoBot:
             return
         await update.effective_message.reply_text(
             "👟 **مرحباً بك في CAVO Vision Bot**\n\n"
-            "ابعت صورة منتج واحد من CAVO، وأنا هحدد اللون والموديل وأجيب المقاسات الحالية بذكاء.\n\n"
+            "ابعت صورة منتج واحد واضحة، وهبعت لك صورة الكتالوج المطابقة مع المقاسات الحالية.\n\n"
             "الأوامر المتاحة:\n"
-            "🧹 `/clean` - لتنظيف الذاكرة وبدء بحث جديد\n"
-            "👨‍💻 `/dev` - عن مطور النظام\n"
-            "📊 `/status` - حالة السيرفر والمخزون",
-            parse_mode="Markdown"
+            "🧹 `/clean` - إلغاء الاختيار الحالي وبدء بحث جديد\n"
+            "📊 `/status` - حالة الكتالوج والمخزون\n"
+            "👨‍💻 `/dev` - معلومات المطور",
+            parse_mode="Markdown",
         )
 
     async def status(self, update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
@@ -118,99 +84,164 @@ class CavoBot:
             return
         age = self.inventory.snapshot_age_seconds
         age_text = "غير متاح" if age is None else f"{age:.0f} ثانية"
-        ai_status = "🟢 مفعل (Gemini)" if gemini_model else "⚪ غير مفعل (Standard)"
         await update.effective_message.reply_text(
-            "🟢 **حالة نظام CAVO Vision Bot**\n\n"
-            f"🤖 محرك الذكاء الاصطناعي: {ai_status}\n"
-            f"📦 المنتجات المحملة: {self.inventory.item_count}\n"
-            f"🕒 عمر آخر نسخة مخزون: {age_text}\n"
+            "🟢 **حالة CAVO Vision Bot**\n\n"
+            "🧠 المطابقة: شكل + لون بترتيب مستقل\n"
+            f"📦 المنتجات المفعلة: {self.inventory.item_count}\n"
+            f"🕒 عمر نسخة المخزون: {age_text}\n"
             "👨‍💻 التطوير والدمج: **MEZO**",
-            parse_mode="Markdown"
+            parse_mode="Markdown",
         )
 
-    # --- أمر التنظيف الجديد ---
     async def clean(self, update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
         if not update.effective_message or not update.effective_user:
             return
-        user_id = update.effective_user.id
-        # مسح أي عمليات معلقة للمستخدم من الذاكرة
-        removed = self.pending.pop(user_id, None)
-        if removed:
-            await update.effective_message.reply_text("🧹 تم تنظيف الجلسة والذاكرة المؤقتة بنجاح! تقدر تبعت صورة جديدة دلوقتي.")
-        else:
-            await update.effective_message.reply_text("✨ الذاكرة نظيفة بالفعل! ابعت صورة المنتج اللي حابب تستفسر عنه.")
+        removed = self.pending.pop(update.effective_user.id, None)
+        text = (
+            "🧹 تم إلغاء الاختيار السابق. ابعت صورة جديدة."
+            if removed
+            else "✨ مفيش اختيار معلق. ابعت صورة المنتج."
+        )
+        await update.effective_message.reply_text(text)
 
-    # --- أمر المطور الجديد ---
     async def developer(self, update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
         if not update.effective_message:
             return
         await update.effective_message.reply_text(
             "💻 **CAVO Vision AI Assistant**\n\n"
             "⚡ **Developed & Engineered by: MEZO**\n"
-            "🚀 Powered by ResNet18 Hybrid & Google Gemini AI\n"
-            "💡 تم تطوير هذا النظام لدمج الرؤية الحاسوبية مع الذكاء الاصطناعي التوليدي لتقديم أسرع وأدق تجربة استعلام عن مخزون CAVO الفاخر.\n\n"
+            "🚀 ResNet18 Hybrid Recognition\n"
             "✨ *DeadZone By MEZO*",
-            parse_mode="Markdown"
+            parse_mode="Markdown",
         )
+
+    def _is_pending_fresh(self, pending: PendingMatch) -> bool:
+        return time.time() - pending.created_at <= self.settings.pending_ttl_seconds
+
+    @staticmethod
+    def _caption(item: InventoryItem, candidate: MatchCandidate | None = None) -> str:
+        caption = format_inventory_result(item)
+        if candidate is not None:
+            caption += f"\n\n🎯 نسبة المطابقة: {candidate.score * 100:.1f}%"
+        return caption
+
+    async def _reply_product(
+        self,
+        message,
+        item: InventoryItem,
+        candidate: MatchCandidate | None = None,
+    ) -> None:
+        image_path = representative_image(self.settings.catalog_dir, item.product_id)
+        caption = self._caption(item, candidate)
+        if image_path is None:
+            await message.reply_text(
+                caption + "\n\n⚠️ صورة الكتالوج الأصلية غير موجودة على السيرفر."
+            )
+            return
+        with image_path.open("rb") as image_file:
+            await message.reply_photo(photo=image_file, caption=caption)
 
     async def photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         message = update.effective_message
         user = update.effective_user
         if not message or not user or not message.photo:
             return
+
+        self.pending.pop(user.id, None)
         await context.bot.send_chat_action(message.chat_id, ChatAction.TYPING)
-        progress = await message.reply_text("🔍 جاري التعرّف على المنتج وتحليل المخزون...")
+        progress = await message.reply_text("🔍 جاري مقارنة الشكل واللون مع كتالوج CAVO...")
 
         telegram_file = await message.photo[-1].get_file()
         payload = bytes(await telegram_file.download_as_bytearray())
         result = await asyncio.to_thread(self.recognizer.match_bytes, payload)
-        
-        if not result.candidates:
-            await progress.edit_text("❌ لم أستطع العثور على منتج مطابق في الكتالوج. أرسل صورة أوضح أو تصفح الموديلات.")
+
+        enabled_candidates = tuple(
+            candidate
+            for candidate in result.candidates
+            if self.inventory.get(candidate.product_id) is not None
+        )
+        if not enabled_candidates:
+            await progress.edit_text(
+                "❌ لم أجد منتجًا مفعلاً مطابقًا. ابعت صورة أوضح بإضاءة طبيعية ومن غير فلاتر."
+            )
             return
 
-        if result.confident:
-            candidate = result.candidates[0]
-            item = self.inventory.get(candidate.product_id)
-            if item is None:
-                await progress.edit_text(
-                    f"⚠️ تعرفت على الموديل ({candidate.product_id}) لكن بيانات المقاسات غير موجودة حاليًا في الإكسيل."
-                )
+        best = enabled_candidates[0]
+        enabled_confident = (
+            result.confident
+            and best.product_id == result.candidates[0].product_id
+        )
+        if enabled_confident:
+            item = self.inventory.get(best.product_id)
+            if item is None:  # Defensive; filtered above.
+                await progress.edit_text("⚠️ بيانات المنتج غير متاحة حاليًا.")
                 return
-            
-            standard_text = format_inventory_result(item)
-            smart_reply = await asyncio.to_thread(generate_smart_sales_reply, payload, standard_text)
-            await progress.edit_text(smart_reply)
+            await progress.delete()
+            await self._reply_product(message, item, best)
+            LOGGER.info(
+                "Confident match user=%s product=%s score=%.4f shape=%.4f color=%.4f",
+                user.id,
+                best.product_id,
+                best.score,
+                best.shape_score,
+                best.color_score,
+            )
             return
 
-        self.pending[user.id] = PendingMatch(image_bytes=payload, created_at=time.time())
-        collage = await asyncio.to_thread(candidate_collage, result.candidates)
+        candidates = enabled_candidates[: self.settings.top_k]
+        self.pending[user.id] = PendingMatch(
+            image_bytes=payload,
+            candidate_ids=tuple(candidate.product_id for candidate in candidates),
+            created_at=time.time(),
+        )
+        collage = await asyncio.to_thread(candidate_collage, candidates)
         keyboard = InlineKeyboardMarkup(
-            [[InlineKeyboardButton(candidate.product_id, callback_data=f"pick:{candidate.product_id}")]
-             for candidate in result.candidates]
+            [
+                [
+                    InlineKeyboardButton(
+                        f"{candidate.product_id} — {candidate.score * 100:.1f}%",
+                        callback_data=f"pick:{candidate.product_id}",
+                    )
+                ]
+                for candidate in candidates
+            ]
         )
         await progress.delete()
         await message.reply_photo(
             collage,
-            caption="⚠️ الموديلات متقاربة في الكتالوج. اختر الصورة المطابقة لطلبك:\n*(لو حابب تلغي دوس /clean)*",
+            caption=(
+                "⚠️ النتيجة غير مؤكدة، لذلك لن أخمّن. اختر نفس صورة المنتج بالضبط.\n"
+                "الاختيار ينتهي تلقائيًا بعد 10 دقائق."
+            ),
             reply_markup=keyboard,
-            parse_mode="Markdown"
         )
 
     async def pick(self, update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
         query = update.callback_query
         user = update.effective_user
-        if not query or not user:
-            return
-        await query.answer()
-        product_id = (query.data or "").partition(":")[2].upper()
-        item = self.inventory.get(product_id)
-        if item is None:
-            await query.edit_message_caption(caption=f"⚠️ لا توجد مقاسات حالية لـ {product_id}")
+        if not query or not user or not query.message:
             return
 
-        pending = self.pending.pop(user.id, None)
-        if pending and user.id in self.settings.admin_user_ids:
+        product_id = (query.data or "").partition(":")[2].upper()
+        pending = self.pending.get(user.id)
+        if pending is None or not self._is_pending_fresh(pending):
+            self.pending.pop(user.id, None)
+            await query.answer("الاختيار انتهى. ابعت الصورة من جديد.", show_alert=True)
+            return
+        if product_id not in pending.candidate_ids:
+            await query.answer("اختيار غير صالح.", show_alert=True)
+            LOGGER.warning("Rejected forged pick user=%s product=%s", user.id, product_id)
+            return
+
+        item = self.inventory.get(product_id)
+        if item is None:
+            await query.answer("المنتج غير متاح حاليًا.", show_alert=True)
+            return
+
+        await query.answer()
+        self.pending.pop(user.id, None)
+
+        if user.id in self.settings.admin_user_ids:
             await asyncio.to_thread(
                 self.recognizer.learn_reference,
                 self.settings.catalog_dir,
@@ -218,9 +249,25 @@ class CavoBot:
                 product_id,
                 pending.image_bytes,
             )
-            LOGGER.info("Saved an admin-confirmed reference for %s", product_id)
+            LOGGER.info("Saved admin-confirmed reference product=%s", product_id)
 
-        await query.edit_message_caption(caption=format_inventory_result(item))
+        image_path = representative_image(self.settings.catalog_dir, product_id)
+        caption = self._caption(item)
+        if image_path is None:
+            await query.edit_message_caption(
+                caption=caption + "\n\n⚠️ صورة الكتالوج الأصلية غير موجودة على السيرفر."
+            )
+            return
+
+        try:
+            with image_path.open("rb") as image_file:
+                await query.edit_message_media(
+                    media=InputMediaPhoto(media=image_file, caption=caption),
+                    reply_markup=None,
+                )
+        except BadRequest:
+            LOGGER.exception("Could not replace candidate collage with product image")
+            await self._reply_product(query.message, item)
 
     async def error(self, update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
         LOGGER.exception("Telegram update failed", exc_info=context.error)
@@ -237,10 +284,8 @@ def build_application(settings: Settings) -> Application:
     )
     application.add_handler(CommandHandler("start", service.start))
     application.add_handler(CommandHandler("status", service.status))
-    # --- تسجيل الأوامر الجديدة ---
     application.add_handler(CommandHandler(["clean", "reset"], service.clean))
     application.add_handler(CommandHandler(["dev", "about", "mezo"], service.developer))
-    
     application.add_handler(MessageHandler(filters.PHOTO, service.photo))
     application.add_handler(CallbackQueryHandler(service.pick, pattern=r"^pick:CAVO-\d{4}$"))
     application.add_error_handler(service.error)

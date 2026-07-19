@@ -13,6 +13,10 @@ from PIL import Image, ImageOps
 
 from .catalog import add_confirmed_reference, discover_catalog_images
 
+COLOR_FEATURE_DIMENSIONS = 72
+SHAPE_SCORE_WEIGHT = 0.72
+COLOR_SCORE_WEIGHT = 0.28
+
 
 class Embedder(Protocol):
     def embed(self, image: Image.Image) -> np.ndarray: ...
@@ -23,6 +27,13 @@ def _unit(vector: np.ndarray) -> np.ndarray:
     if not norm:
         return vector.astype(np.float32)
     return (vector / norm).astype(np.float32)
+
+
+def _row_unit(matrix: np.ndarray) -> np.ndarray:
+    matrix = matrix.astype(np.float32, copy=False)
+    norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+    norms[norms == 0] = 1.0
+    return matrix / norms
 
 
 def color_histogram(image: Image.Image, bins: int = 24) -> np.ndarray:
@@ -70,6 +81,8 @@ class MatchCandidate:
     product_id: str
     score: float
     reference_path: str
+    shape_score: float = 0.0
+    color_score: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,6 +104,50 @@ def confidence_gate(
     second = float(scores[1]) if len(scores) > 1 else -1.0
     margin = best - second
     return best >= min_score and margin >= min_margin, best, margin
+
+
+def hybrid_similarity(
+    vectors: np.ndarray,
+    query: np.ndarray,
+    *,
+    color_dimensions: int = COLOR_FEATURE_DIMENSIONS,
+    shape_weight: float = SHAPE_SCORE_WEIGHT,
+    color_weight: float = COLOR_SCORE_WEIGHT,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Re-score legacy hybrid vectors with explicit shape/color weights.
+
+    The stored vector concatenates deep and color components and is normalized as
+    one vector. A direct dot product therefore squares the component weights,
+    making the old 18% color setting contribute only about 4.6% to the final
+    similarity. Splitting and normalizing the components restores the intended
+    color sensitivity without rebuilding the existing catalog index.
+    """
+    if (
+        vectors.ndim != 2
+        or query.ndim != 1
+        or vectors.shape[1] != query.shape[0]
+        or vectors.shape[1] <= color_dimensions
+    ):
+        combined = vectors @ query
+        return combined, combined, np.ones_like(combined, dtype=np.float32)
+
+    split_at = vectors.shape[1] - color_dimensions
+    shape_vectors = _row_unit(vectors[:, :split_at])
+    color_vectors = _row_unit(vectors[:, split_at:])
+    shape_query = _unit(query[:split_at])
+    color_query = _unit(query[split_at:])
+
+    shape_scores = shape_vectors @ shape_query
+    color_scores = color_vectors @ color_query
+    total_weight = shape_weight + color_weight
+    if total_weight <= 0:
+        raise ValueError("Hybrid similarity weights must have a positive sum")
+    combined = (shape_scores * shape_weight + color_scores * color_weight) / total_weight
+    return (
+        combined.astype(np.float32),
+        shape_scores.astype(np.float32),
+        color_scores.astype(np.float32),
+    )
 
 
 class ProductRecognizer:
@@ -160,21 +217,38 @@ class ProductRecognizer:
             product_ids = self.product_ids.copy()
             reference_paths = self.reference_paths.copy()
             vectors = self.vectors.copy()
-        scores = vectors @ query
+
+        scores, shape_scores, color_scores = hybrid_similarity(vectors, query)
 
         # A product may have multiple confirmed angles. Keep its strongest match.
-        best_by_product: dict[str, tuple[float, str]] = {}
-        for product_id, path, score in zip(
-            product_ids, reference_paths, scores, strict=True
+        best_by_product: dict[str, tuple[float, str, float, float]] = {}
+        for product_id, path, score, shape_score, color_score in zip(
+            product_ids,
+            reference_paths,
+            scores,
+            shape_scores,
+            color_scores,
+            strict=True,
         ):
             current = best_by_product.get(product_id)
             if current is None or float(score) > current[0]:
-                best_by_product[product_id] = (float(score), path)
+                best_by_product[product_id] = (
+                    float(score),
+                    path,
+                    float(shape_score),
+                    float(color_score),
+                )
 
         ranked = sorted(best_by_product.items(), key=lambda item: item[1][0], reverse=True)
         candidates = tuple(
-            MatchCandidate(product_id=pid, score=score, reference_path=path)
-            for pid, (score, path) in ranked[: self.top_k]
+            MatchCandidate(
+                product_id=pid,
+                score=score,
+                reference_path=path,
+                shape_score=shape_score,
+                color_score=color_score,
+            )
+            for pid, (score, path, shape_score, color_score) in ranked[: self.top_k]
         )
         confident, best, margin = confidence_gate(
             [candidate.score for candidate in candidates],
@@ -214,7 +288,7 @@ class ProductRecognizer:
                 reference_paths=stored_paths,
                 vectors=self.vectors,
                 metadata=np.asarray(
-                    [json.dumps({"version": 1, "images": len(self.product_ids)})]
+                    [json.dumps({"version": 2, "images": len(self.product_ids)})]
                 ),
             )
         return output
@@ -242,7 +316,7 @@ def build_index(catalog_dir: Path, output: Path, embedder: Embedder) -> int:
         product_ids=np.asarray(product_ids, dtype=str),
         reference_paths=np.asarray(paths, dtype=str),
         vectors=np.stack(vectors).astype(np.float32),
-        metadata=np.asarray([json.dumps({"version": 1, "images": len(catalog)})]),
+        metadata=np.asarray([json.dumps({"version": 2, "images": len(catalog)})]),
     )
     return len(catalog)
 

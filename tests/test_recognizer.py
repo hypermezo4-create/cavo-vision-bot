@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 
-from cavo_bot.recognizer import ProductRecognizer, confidence_gate
+from cavo_bot.recognizer import ProductRecognizer, confidence_gate, hybrid_similarity
 
 
 class StubEmbedder:
@@ -29,6 +29,28 @@ class ConfidenceGateTests(unittest.TestCase):
     def test_rejects_low_absolute_score(self) -> None:
         confident, _, _ = confidence_gate([0.60, 0.20], 0.72, 0.035)
         self.assertFalse(confident)
+
+    def test_hybrid_similarity_restores_color_influence(self) -> None:
+        # Two products are almost identical in shape. The first has the wrong
+        # color while the second matches the query color exactly.
+        query = np.asarray([1.0, 0.0, 1.0, 0.0], dtype=np.float32)
+        vectors = np.asarray(
+            [
+                [1.0, 0.0, 0.0, 1.0],
+                [0.98, 0.20, 1.0, 0.0],
+            ],
+            dtype=np.float32,
+        )
+        combined, shape, color = hybrid_similarity(
+            vectors,
+            query,
+            color_dimensions=2,
+            shape_weight=0.72,
+            color_weight=0.28,
+        )
+        self.assertGreater(shape[0], shape[1])
+        self.assertGreater(color[1], color[0])
+        self.assertGreater(combined[1], combined[0])
 
     def test_load_resolves_portable_catalog_paths(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

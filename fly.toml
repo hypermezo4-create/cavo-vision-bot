@@ -1,0 +1,24 @@
+app = "cavo-vision-bot"
+primary_region = "fra"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  SHEET_NAME = "الورقة1"
+  SHEET_REFRESH_SECONDS = "20"
+  CATALOG_DIR = "/data/catalog"
+  INDEX_PATH = "/data/catalog-index.npz"
+  LEARNING_DIR = "/data/confirmed"
+
+[processes]
+  app = "cavo-bot"
+
+[[mounts]]
+  source = "cavo_data"
+  destination = "/data"
+
+[[vm]]
+  memory = "2gb"
+  cpu_kind = "shared"
+  cpus = 1

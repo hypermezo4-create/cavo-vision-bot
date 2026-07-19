@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cavo-vision-bot"
+version = "0.1.0"
+description = "Telegram product recognition and live CAVO inventory lookup"
+requires-python = ">=3.11"
+dependencies = [
+  "numpy>=1.26,<3",
+  "openpyxl>=3.1,<4",
+  "Pillow>=10,<13",
+  "python-telegram-bot>=21.10,<23",
+  "torch>=2.4,<3",
+  "torchvision>=0.19,<1",
+]
+
+[project.scripts]
+cavo-bot = "cavo_bot.bot:main"
+cavo-extract-xlsx = "cavo_bot.extract_xlsx:main"
+cavo-build-index = "cavo_bot.recognizer:main"
+cavo-recover-xlsx = "cavo_bot.recover_xlsx:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

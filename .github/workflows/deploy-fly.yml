@@ -25,12 +25,10 @@ jobs:
       - name: Set up Fly CLI
         uses: superfly/flyctl-actions/setup-flyctl@master
 
-      - name: Deploy with Fly Buildkit
+      - name: Deploy with Fly remote builder
         run: >-
           flyctl deploy
           --app cavo-vision-bot
-          --buildkit
-          --depot=false
           --remote-only
           --ha=false
           --yes

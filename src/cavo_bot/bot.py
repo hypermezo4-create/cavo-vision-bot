@@ -4,7 +4,6 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
-from pathlib import Path
 
 from telegram import (
     InlineKeyboardButton,
@@ -268,7 +267,7 @@ class CavoBot:
                 )
         except BadRequest:
             LOGGER.exception("Could not replace candidate collage with product image")
-            await query.message.reply_text(caption)
+            await self._reply_product(query.message, item)
 
     async def error(self, update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
         LOGGER.exception("Telegram update failed", exc_info=context.error)

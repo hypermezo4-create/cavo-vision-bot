@@ -7,12 +7,15 @@ import posixpath
 import shutil
 import struct
 import zlib
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from xml.etree import ElementTree
 
 LOCAL_SIGNATURE = 0x04034B50
 DESCRIPTOR_SIGNATURE = 0x08074B50
+MAX_SOURCE_BYTES = 1_500_000_000
+MAX_ENTRY_BYTES = 512_000_000
+MAX_RECOVERED_BYTES = 4_000_000_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,19 +46,25 @@ def _stored_with_descriptor(data: bytes, start: int) -> tuple[bytes, int, int, i
     while cursor >= 0 and cursor + 16 <= len(data):
         crc, compressed_size, uncompressed_size = struct.unpack_from("<III", data, cursor + 4)
         payload = data[start:cursor]
-        if compressed_size == len(payload) and uncompressed_size == len(payload):
-            if binascii.crc32(payload) & 0xFFFFFFFF == crc:
-                return payload, cursor + 16, crc, compressed_size
+        if (
+            compressed_size == len(payload)
+            and uncompressed_size == len(payload)
+            and binascii.crc32(payload) & 0xFFFFFFFF == crc
+        ):
+            return payload, cursor + 16, crc, compressed_size
         cursor = data.find(signature, cursor + 1)
     return None
 
 
 def recover_local_entries(source: Path, output_dir: Path) -> RecoveryResult:
+    if source.stat().st_size > MAX_SOURCE_BYTES:
+        raise ValueError(f"Recovery source exceeds {MAX_SOURCE_BYTES} bytes")
     data = source.read_bytes()
     output_dir.mkdir(parents=True, exist_ok=True)
     cursor = 0
     entries: list[RecoveryEntry] = []
     truncated_entry: str | None = None
+    total_recovered = 0
 
     while cursor + 30 <= len(data):
         if struct.unpack_from("<I", data, cursor)[0] != LOCAL_SIGNATURE:
@@ -88,10 +97,14 @@ def recover_local_entries(source: Path, output_dir: Path) -> RecoveryResult:
             if method == 8:
                 inflater = zlib.decompressobj(-15)
                 try:
-                    payload = inflater.decompress(memoryview(data)[data_start:])
+                    payload = inflater.decompress(
+                        memoryview(data)[data_start:], MAX_ENTRY_BYTES + 1
+                    )
                 except zlib.error:
                     truncated_entry = name
                     break
+                if len(payload) > MAX_ENTRY_BYTES:
+                    raise ValueError(f"ZIP entry exceeds safety limit: {name}")
                 if not inflater.eof:
                     truncated_entry = name
                     break
@@ -135,7 +148,10 @@ def recover_local_entries(source: Path, output_dir: Path) -> RecoveryResult:
                 break
             compressed = data[data_start:compressed_end]
             if method == 8:
-                payload = zlib.decompress(compressed, -15)
+                inflater = zlib.decompressobj(-15)
+                payload = inflater.decompress(compressed, MAX_ENTRY_BYTES + 1)
+                if len(payload) > MAX_ENTRY_BYTES or not inflater.eof:
+                    raise ValueError(f"ZIP entry exceeds safety limit or is invalid: {name}")
             elif method == 0:
                 payload = compressed
             else:
@@ -148,6 +164,9 @@ def recover_local_entries(source: Path, output_dir: Path) -> RecoveryResult:
         if binascii.crc32(payload) & 0xFFFFFFFF != crc:
             truncated_entry = name
             break
+        total_recovered += len(payload)
+        if total_recovered > MAX_RECOVERED_BYTES:
+            raise ValueError("Recovered ZIP content exceeds the safety limit")
 
         if name and not name.endswith("/"):
             output = _safe_output(output_dir, name)
@@ -173,13 +192,15 @@ def build_partial_catalog(recovered_root: Path, catalog_dir: Path) -> dict[str, 
         raise ValueError("Drawing metadata required to map images to rows was not recovered")
 
     rel_root = ElementTree.parse(relationships).getroot()
-    rel_targets = {
-        element.attrib["Id"]: posixpath.normpath(
-            posixpath.join("xl/drawings", element.attrib["Target"])
-        )
-        for element in rel_root
-        if "Id" in element.attrib and "Target" in element.attrib
-    }
+    rel_targets: dict[str, str] = {}
+    for element in rel_root:
+        if "Id" not in element.attrib or "Target" not in element.attrib:
+            continue
+        normalized = posixpath.normpath(posixpath.join("xl/drawings", element.attrib["Target"]))
+        pure = PurePosixPath(normalized)
+        if pure.is_absolute() or ".." in pure.parts:
+            raise ValueError(f"Unsafe drawing relationship target: {normalized!r}")
+        rel_targets[element.attrib["Id"]] = normalized
     namespaces = {
         "xdr": "http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing",
         "a": "http://schemas.openxmlformats.org/drawingml/2006/main",
@@ -252,4 +273,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

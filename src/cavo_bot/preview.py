@@ -34,4 +34,3 @@ def candidate_collage(candidates: tuple[MatchCandidate, ...]) -> bytes:
     output = io.BytesIO()
     canvas.save(output, format="JPEG", quality=90, optimize=True)
     return output.getvalue()
-

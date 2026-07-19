@@ -14,6 +14,9 @@ build/
 data/catalog/
 data/index/
 data/confirmed/
+deployment/catalog/
+deployment/catalog-index.npz
+deployment/BUILD_INFO.json
 *.xlsx
 *.xls
 .DS_Store

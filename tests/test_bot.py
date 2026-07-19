@@ -10,6 +10,7 @@ from cavo_bot.bot import (
     PendingMatch,
     _deterministic_inventory_answer,
     _extract_product_code,
+    _format_reference_card,
     _format_stock_dashboard,
     _quantity_label,
 )
@@ -42,6 +43,14 @@ class BotLogicTests(unittest.TestCase):
         self.assertIn("CAVO-0012", dashboard)
         self.assertIn("إجمالي المخزون: 3", dashboard)
         self.assertIn("0.25 ثانية", dashboard)
+
+    def test_reference_card_combines_image_context_score_and_sizes(self) -> None:
+        card = _format_reference_card(inventory_item(), elapsed=0.4, score=0.876)
+        self.assertIn("صورة المنتج المطابق", card)
+        self.assertIn("87.6%", card)
+        self.assertIn("مقاس 41", card)
+        self.assertIn("مقاس 42", card)
+        self.assertIn("CAVO-0012", card)
 
     def test_answers_size_and_total_without_ai(self) -> None:
         item = inventory_item()

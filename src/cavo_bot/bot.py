@@ -5,6 +5,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction
@@ -86,6 +87,20 @@ def _format_stock_dashboard(item: InventoryItem, elapsed: float = 0.0) -> str:
         f"{body}{warning}\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
         f"⏱️ الاستجابة: {elapsed:.2f} ثانية"
+    )
+
+
+def _format_reference_card(
+    item: InventoryItem,
+    elapsed: float = 0.0,
+    score: float | None = None,
+) -> str:
+    match_line = f"\n🎯 درجة التطابق: {score:.1%}" if score is not None else ""
+    return (
+        "✅ صورة المنتج المطابق من الكتالوج"
+        f"{match_line}\n"
+        "راجع الصورة قبل الاعتماد على المقاسات.\n\n"
+        f"{_format_stock_dashboard(item, elapsed)}"
     )
 
 
@@ -381,9 +396,17 @@ class CavoBot:
                         await progress.edit_text("🔴 المنتج غير متوفر أو غير مفعّل حاليًا.")
                         return
                     context.user_data[KEY_LAST_PRODUCT] = item.product_id
-                    await progress.edit_text(
-                        _format_stock_dashboard(item, time.perf_counter() - started)
-                    )
+                    reference_path = Path(candidate.reference_path)
+                    with reference_path.open("rb") as reference:
+                        await message.reply_photo(
+                            photo=reference,
+                            caption=_format_reference_card(
+                                item,
+                                time.perf_counter() - started,
+                                candidate.score,
+                            ),
+                        )
+                    await progress.delete()
                     return
 
                 self._prune_pending()

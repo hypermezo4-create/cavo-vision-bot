@@ -29,6 +29,7 @@ class Settings:
     min_match_score: float
     min_match_margin: float
     top_k: int
+    pending_ttl_seconds: int
     log_level: str
 
     @classmethod
@@ -42,8 +43,9 @@ class Settings:
             catalog_dir=Path(os.getenv("CATALOG_DIR", "/data/catalog")),
             index_path=Path(os.getenv("INDEX_PATH", "/data/catalog-index.npz")),
             learning_dir=Path(os.getenv("LEARNING_DIR", "/data/confirmed")),
-            min_match_score=float(os.getenv("MIN_MATCH_SCORE", "0.72")),
-            min_match_margin=float(os.getenv("MIN_MATCH_MARGIN", "0.035")),
+            min_match_score=float(os.getenv("MIN_MATCH_SCORE", "0.76")),
+            min_match_margin=float(os.getenv("MIN_MATCH_MARGIN", "0.05")),
             top_k=max(2, min(5, int(os.getenv("TOP_K", "3")))),
+            pending_ttl_seconds=max(60, int(os.getenv("PENDING_TTL_SECONDS", "600"))),
             log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
         )

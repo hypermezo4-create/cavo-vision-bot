@@ -80,7 +80,7 @@ class CavoSheetClient:
 
     @property
     def item_count(self) -> int:
-        return len(self._items)
+        return sum(1 for item in self._items.values() if item.enabled)
 
     @property
     def snapshot_age_seconds(self) -> float | None:
@@ -89,7 +89,8 @@ class CavoSheetClient:
         return max(0.0, time.monotonic() - self._updated_monotonic)
 
     def get(self, product_id: str) -> InventoryItem | None:
-        return self._items.get(product_id.upper())
+        item = self._items.get(product_id.upper())
+        return item if item is not None and item.enabled else None
 
     def _csv_url(self) -> str:
         sheet = urllib.parse.quote(self.sheet_name)
@@ -101,7 +102,7 @@ class CavoSheetClient:
     def _download_csv(self) -> str:
         request = urllib.request.Request(
             self._csv_url(),
-            headers={"User-Agent": "CAVO-Vision-Bot/0.1"},
+            headers={"User-Agent": "CAVO-Vision-Bot/0.2"},
         )
         with urllib.request.urlopen(request, timeout=20) as response:
             return response.read().decode("utf-8-sig")
@@ -188,4 +189,3 @@ def format_inventory_result(item: InventoryItem) -> str:
         f"📦 إجمالي الكمية: {item.computed_quantity} قطعة"
         f"{warning}"
     )
-
